@@ -1,0 +1,62 @@
+# =====================================================================
+# SwinUNETR-I : single-phase (inhalation / T00) PE classifier
+# Nested cross-validation config (outer 10-fold, inner 5-fold)
+# =====================================================================
+experiment_name: swinunetr_i
+seed: 42
+
+data:
+  # Pre-processed volumes: each .mat holds T00 (inhale) and T50 (exhale),
+  # already cropped to 512x512x96, HU-clipped and normalised to [0, 1].
+  data_dir:   /mnt/hot/public/Yi-Kuan/PE/original_size_crop51251296
+  label_file: /mnt/hot/public/Yi-Kuan/PE/original_size_crop51251296/label.csv
+  phase: T00            # single-phase model uses inhalation only
+  # Fast-I/O cache of 256x256x96 float32 volumes (see scripts/precache.py).
+  cache_dir: /home/yikuan/PE_project/cache
+
+model:
+  pretrained_path: /home/yikuan/Yi-Kuan/Large-Scale-Medical-main/pretrained/VoComni_L.pt
+  feature_size: 96      # VoComni-L
+  in_channels: 1
+  use_checkpoint: false # gradient checkpointing off (80 GB GPU); faster, more memory
+
+cv:
+  outer_folds: 10       # performance estimation
+  inner_folds: 5        # hyper-parameter selection (nested)
+
+training:
+  epochs: 1000
+  patience: 150         # early-stopping patience on validation AUC
+  batch_size: 1         # per-step batch on one GPU (the full model barely fits)
+  accum_steps: 4        # gradient accumulation -> effective batch = 1 x 4 = 4 (paper)
+  num_workers: 4
+  # Default hyper-parameters; the search below overrides one at a time.
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  dropout: 0.0
+
+# Staged hyper-parameter search (as in the paper): tune one group at a
+# time, freezing the best value before moving to the next stage.
+hpsearch:
+  stages:
+    - name: lr
+      values: [1.0e-3, 1.0e-4, 1.0e-5]
+    - name: weight_decay
+      values: [1.0e-3, 1.0e-4, 1.0e-5]
+    - name: dropout
+      values: [0.0, 0.1, 0.2]
+
+hardware:
+  # GPU 3 is the DGX Display (4 GB) -- skip it. CUDA_DEVICE_ORDER=PCI_BUS_ID is
+  # set per-job so these ids match `nvidia-smi`.
+  gpus: [0, 1, 2, 4]
+  # Inner-search trainings are only for *ranking* hyper-parameters, so they use
+  # a reduced epoch budget (refit uses the full `training.epochs`/`patience`).
+  # Measured ~120 s/epoch on one A100 (bf16, batch 1). With 450 inner + 10 refit
+  # trainings on 4 GPUs, the full run is on the order of a week -- tune these
+  # (and the grids / inner_folds) to trade rigour for wall-clock time.
+  inner_epochs: 100
+  inner_patience: 20
+
+output:
+  root: results         # all artefacts land in results/<experiment_name>/

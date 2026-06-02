@@ -1,0 +1,29 @@
+# Data & model weights (never commit large binaries / patient data)
+*.mat
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+pretrained/
+cache/
+
+# Results / logs / checkpoints
+results/**
+!results/.gitkeep
+runs/
+*.log
+wandb/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+env/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
