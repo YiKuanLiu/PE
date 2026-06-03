@@ -20,6 +20,7 @@ import numpy as np
 import torch
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader, Subset
+from torch.utils.tensorboard import SummaryWriter
 
 from .data import PEDataset
 from .metrics import point_metrics
@@ -61,7 +62,8 @@ def evaluate(model, loader, device):
 
 def train_one(dataset, train_idx, val_idx, hp, device, *, epochs, patience,
               batch_size, num_workers, pretrained_path, feature_size, seed,
-              accum_steps=1, use_checkpoint=False, freeze="all", keep_best_model=False):
+              accum_steps=1, use_checkpoint=False, freeze="all", keep_best_model=False,
+              tb_dir=None):
     """以「驗證 AUC 的 early stopping」訓練，回傳結果字典。
 
     ``batch_size`` 是單卡的每步批次大小；透過 ``accum_steps`` 做梯度累積，
@@ -86,6 +88,7 @@ def train_one(dataset, train_idx, val_idx, hp, device, *, epochs, patience,
     best_auc, best_epoch, trigger = -1.0, -1, 0
     best_state = None
     n_batches = len(train_loader)
+    writer = SummaryWriter(tb_dir) if tb_dir else None  # TensorBoard：記錄 loss / AUC 曲線
 
     for epoch in range(epochs):
         model.train()
@@ -107,8 +110,13 @@ def train_one(dataset, train_idx, val_idx, hp, device, *, epochs, patience,
         # 每個 epoch 結束算一次驗證 AUC
         y, p = evaluate(model, val_loader, device)
         val_auc = roc_auc_score(y, p) if len(np.unique(y)) > 1 else float("nan")
-        print(f"epoch {epoch+1}/{epochs}  train_loss={running/len(train_loader):.4f}  "
+        tl = running / len(train_loader)
+        print(f"epoch {epoch+1}/{epochs}  train_loss={tl:.4f}  "
               f"val_auc={val_auc:.4f}  best={max(best_auc,0):.4f}", flush=True)
+        if writer is not None:
+            writer.add_scalar("train/loss", tl, epoch)        # 訓練損失曲線
+            if not np.isnan(val_auc):
+                writer.add_scalar("val/auc", val_auc, epoch)  # 驗證 AUC 曲線
 
         # AUC 有進步就更新最佳（並視需要保存最佳權重）；否則累加耐心計數
         if not np.isnan(val_auc) and val_auc > best_auc:
@@ -120,6 +128,9 @@ def train_one(dataset, train_idx, val_idx, hp, device, *, epochs, patience,
             if trigger >= patience:
                 print(f"early stopping at epoch {epoch+1}", flush=True)
                 break
+
+    if writer is not None:
+        writer.close()
 
     result = {"best_val_auc": float(best_auc), "best_epoch": int(best_epoch)}
     if keep_best_model and best_state is not None:
@@ -150,6 +161,11 @@ def main():
     hp = {"lr": args.lr, "weight_decay": args.weight_decay, "dropout": args.dropout}
     fold = splits["folds"][args.outer_fold]
 
+    # TensorBoard 記錄目錄：results/<exp>/tb/<mode>/<job 名稱>（每個 job 一個 run）
+    job_name = os.path.splitext(os.path.basename(args.out))[0]
+    exp_dir = os.path.dirname(os.path.dirname(args.out))  # results/<exp>
+    tb_dir = os.path.join(exp_dir, "tb", args.mode, job_name)
+
     dataset = PEDataset(cfg["data"]["label_file"], cfg["data"]["data_dir"],
                         phase=cfg["data"]["phase"], cache_dir=cfg["data"].get("cache_dir"))
 
@@ -168,7 +184,7 @@ def main():
         res, _ = train_one(dataset, inner["train_idx"], inner["val_idx"], hp, device,
                            epochs=cfg["hardware"]["inner_epochs"],
                            patience=cfg["hardware"]["inner_patience"],
-                           keep_best_model=False, **common)
+                           keep_best_model=False, tb_dir=tb_dir, **common)
         res.update({"outer_fold": args.outer_fold, "inner_fold": args.inner_fold,
                     "mode": "inner", "hp": hp})
     else:  # refit
@@ -176,15 +192,22 @@ def main():
         res, model = train_one(dataset, fold["refit_train_idx"], fold["refit_val_idx"],
                                hp, device, epochs=cfg["training"]["epochs"],
                                patience=cfg["training"]["patience"],
-                               keep_best_model=True, **common)
+                               keep_best_model=True, tb_dir=tb_dir, **common)
         test_loader = _loader(dataset, fold["test_idx"], cfg["training"]["batch_size"],
                               cfg["training"]["num_workers"], shuffle=False)
         y, p = evaluate(model, test_loader, device)
         names = [dataset.filenames[i] for i in fold["test_idx"]]
+        test_metrics = point_metrics(y, p)
         res.update({"outer_fold": args.outer_fold, "mode": "refit", "hp": hp,
                     "test": {"filenames": names, "y_true": y.astype(int).tolist(),
                              "y_score": p.astype(float).tolist()},
-                    "test_metrics": point_metrics(y, p)})
+                    "test_metrics": test_metrics})
+        # 把該折的測試指標也寫進 TensorBoard（與訓練曲線同一個 run）
+        w = SummaryWriter(tb_dir)
+        for k, v in test_metrics.items():
+            if v == v:  # 非 nan
+                w.add_scalar(f"test/{k}", v, 0)
+        w.close()
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:

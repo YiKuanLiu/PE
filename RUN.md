@@ -52,11 +52,30 @@ tail -f results/swinunetr_i/run.log           # 即時看 orchestrator 輸出
 watch -n5 nvidia-smi                           # 看 4 張卡是否都在跑
 ```
 
-## 五、可中斷續跑
+## 五、即時效能介面（loss / AUC 曲線）
+
+**TensorBoard（互動式網頁，曲線會即時更新）** —— 另開一個終端機：
+```bash
+conda activate PE && cd ~/PE_project
+tensorboard --logdir results/swinunetr_i/tb --port 6006
+```
+然後瀏覽器開 `http://localhost:6006`。
+- 用 **VS Code 連 server 時，port 6006 會自動轉發**，直接開 localhost:6006 即可；
+  純 ssh 則先轉發：`ssh -L 6006:localhost:6006 yikuan@10.157.174.124`
+- 每個 job 是一個 run：`inner/…` 是調參、`refit/…` 是正式訓練+測試。
+  左側 run 過濾框打 `refit` 就只看正式折。曲線標籤：`train/loss`、`val/auc`、`test/*`。
+
+**終端機快照（不開瀏覽器，直接看目前 AUC 與進度）**：
+```bash
+python -m scripts.status --config configs/swinunetr_i.yaml
+```
+會印出：已完成 job 數、各折測試 AUC/Sens/Spec/F1、以及目前的 平均±95%CI。
+
+## 六、可中斷續跑
 隨時 `Ctrl-C` / 關閉 / 重開機都沒關係 —— 再執行 `bash run.sh`（或同一行指令），
 **已完成的 job（已有結果 JSON）會自動跳過**，從中斷處接著跑；崩掉沒產生 JSON 的 job 會自動重試。
 
-## 六、隨時取結果
+## 七、隨時取結果
 ```bash
 python -m scripts.run_nested_cv --config configs/swinunetr_i.yaml --only-aggregate
 cat results/swinunetr_i/summary.json          # AUC/Sens/Spec/PPV/NPV/F1 的 平均±95%CI
