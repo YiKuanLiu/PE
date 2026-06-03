@@ -19,6 +19,10 @@ model:
   feature_size: 96      # VoComni-L
   in_channels: 1
   use_checkpoint: false # gradient checkpointing off (80 GB GPU); faster, more memory
+  # Transfer-learning freeze strategy (see scripts/freeze_experiment.py):
+  #   all (full fine-tune, best val AUC + matches paper) | freeze_swinvit
+  #   | freeze_heavy (train ~12% params, faster/robust) | head_only (linear probe, fails)
+  freeze: all
 
 cv:
   outer_folds: 10       # performance estimation

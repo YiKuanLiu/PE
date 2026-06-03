@@ -94,6 +94,40 @@ class SwinClassifierI(nn.Module):
         return self.head(out)  # logits
 
 
+def apply_freeze(model, strategy):
+    """Freeze parameter groups for transfer learning. Returns (n_trainable, n_total).
+
+    Strategies (the heavy pretrained blocks are encoder10 ~127M and decoder5 ~58M,
+    not the transformer ~32M -- see param breakdown):
+      * ``all``           : full fine-tune (nothing frozen).
+      * ``freeze_swinvit``: freeze the Swin transformer encoder only.
+      * ``freeze_heavy``  : freeze swinViT + encoder10 + decoder5 (~217M); train the
+                            lighter UNETR blocks + head (~31M).
+      * ``head_only``     : linear probe -- train only the classification head.
+    """
+    for p in model.parameters():
+        p.requires_grad = True
+
+    if strategy == "all":
+        frozen = []
+    elif strategy == "freeze_swinvit":
+        frozen = [model.swinViT]
+    elif strategy == "freeze_heavy":
+        frozen = [model.swinViT, model.encoder10, model.decoder5]
+    elif strategy == "head_only":
+        frozen = [m for n, m in model.named_children() if n not in ("head", "dropout")]
+    else:
+        raise ValueError(f"unknown freeze strategy: {strategy}")
+
+    for mod in frozen:
+        for p in mod.parameters():
+            p.requires_grad = False
+
+    n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    n_total = sum(p.numel() for p in model.parameters())
+    return n_train, n_total
+
+
 def load_pretrained(model, pretrained_path, verbose=True):
     """Load matching weights from a VoComni checkpoint (head stays random-init)."""
     ckpt = torch.load(pretrained_path, map_location="cpu")

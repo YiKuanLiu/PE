@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader, Subset
 
 from .data import PEDataset
 from .metrics import point_metrics
-from .models import SwinClassifierI, load_pretrained
+from .models import SwinClassifierI, apply_freeze, load_pretrained
 
 
 def set_seed(seed):
@@ -64,7 +64,7 @@ def evaluate(model, loader, device):
 
 def train_one(dataset, train_idx, val_idx, hp, device, *, epochs, patience,
               batch_size, num_workers, pretrained_path, feature_size, seed,
-              accum_steps=1, use_checkpoint=False, keep_best_model=False):
+              accum_steps=1, use_checkpoint=False, freeze="all", keep_best_model=False):
     """Train with early stopping on validation AUC. Returns a result dict.
 
     ``batch_size`` is the per-step (single-GPU) batch; gradient accumulation over
@@ -78,9 +78,10 @@ def train_one(dataset, train_idx, val_idx, hp, device, *, epochs, patience,
     model = SwinClassifierI(in_channels=1, n_class=1, feature_size=feature_size,
                             dropout=hp["dropout"], use_checkpoint=use_checkpoint).to(device)
     load_pretrained(model, pretrained_path, verbose=False)
+    apply_freeze(model, freeze)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=hp["lr"],
-                                  weight_decay=hp["weight_decay"])
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
+                                  lr=hp["lr"], weight_decay=hp["weight_decay"])
     criterion = torch.nn.BCEWithLogitsLoss()
 
     best_auc, best_epoch, trigger = -1.0, -1, 0
@@ -154,6 +155,7 @@ def main():
                   num_workers=cfg["training"]["num_workers"],
                   accum_steps=cfg["training"].get("accum_steps", 1),
                   use_checkpoint=cfg["model"].get("use_checkpoint", False),
+                  freeze=cfg["model"].get("freeze", "all"),
                   pretrained_path=cfg["model"]["pretrained_path"],
                   feature_size=cfg["model"]["feature_size"], seed=cfg["seed"])
 
