@@ -19,6 +19,7 @@ dependencies:
       - einops
       - tqdm
       - tensorboard
+      - "setuptools<81"   # TensorBoard imports pkg_resources, dropped in setuptools>=81
       - h5py
       - matplotlib
       - pyyaml

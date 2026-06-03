@@ -11,6 +11,7 @@ nibabel
 einops
 tqdm
 tensorboard
+setuptools<81   # TensorBoard imports pkg_resources, dropped in setuptools>=81 / TensorBoard 仍用 pkg_resources
 h5py
 matplotlib
 pyyaml
