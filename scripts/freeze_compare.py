@@ -1,14 +1,18 @@
-"""彙整凍結策略實驗（讀取 results/freeze_exp/*.json）。
+"""Summarise the freeze-strategy experiment (reads results/freeze_exp/*.json).
+彙整凍結策略實驗（讀取 results/freeze_exp/*.json）。
 
-逐策略列出：可訓練參數比例、最佳驗證 AUC、達到最佳的 epoch（收斂速度），
-以及最終 train loss（容量越大通常越低 —— 與驗證 AUC 的落差大代表過擬合）。
+Per strategy: trainable %, best validation AUC, the epoch it was reached (convergence
+speed), and the final train loss (lower with more capacity -> a big train/val gap
+signals overfitting).
+逐策略列出：可訓練參數比例、最佳驗證 AUC、達到最佳的 epoch（收斂速度），以及最終
+train loss（容量越大通常越低 —— 與驗證 AUC 的落差大代表過擬合）。
 """
 import glob
 import json
 import os
 import sys
 
-# 報表列出的順序（可訓練參數由多到少）
+# print order, most trainable params first / 報表列出的順序（可訓練參數由多到少）
 ORDER = ["all", "freeze_swinvit", "freeze_heavy", "head_only"]
 
 
@@ -35,7 +39,7 @@ def main(exp_dir="results/freeze_exp"):
         rows.append((s, d["best_val_auc"], d["best_epoch"], final_loss, pct))
 
     if rows:
-        # 找出最高驗證 AUC 的策略（nan 視為最低）
+        # highest validation AUC (nan treated as lowest) / 找出最高驗證 AUC 的策略（nan 視為最低）
         best = max(rows, key=lambda r: (r[1] if r[1] == r[1] else -1))
         print("-" * 70)
         print(f"highest val AUC: '{best[0]}' = {best[1]:.4f} "

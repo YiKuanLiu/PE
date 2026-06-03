@@ -1,5 +1,6 @@
-# 協調器的極小端到端煙霧測試（非正式結果用）。
-# 快速驗證 分階段搜尋 -> 排程 -> refit -> 彙整 整條流程是否串得起來。
+# Tiny end-to-end smoke test of the orchestrator (NOT for real results).
+# Verifies staged search -> scheduling -> refit -> aggregation plumbing fast.
+# 協調器的極小端到端煙霧測試（非正式結果用）。快速驗證 分階段搜尋 -> 排程 -> refit -> 彙整 整條流程。
 experiment_name: smoke
 seed: 42
 
@@ -16,11 +17,11 @@ model:
   use_checkpoint: false
 
 cv:
-  outer_folds: 2        # 縮小折數以加速
+  outer_folds: 2        # shrink folds to go fast / 縮小折數以加速
   inner_folds: 2
 
 training:
-  epochs: 2             # 只跑 2 epoch（目的是驗證流程，非求效能）
+  epochs: 2             # only 2 epochs (test plumbing, not performance) / 只跑 2 epoch（驗證流程，非求效能）
   patience: 2
   batch_size: 1
   accum_steps: 4
@@ -31,7 +32,7 @@ training:
 
 hpsearch:
   stages:
-    - name: lr           # 單一階段、兩個候選值
+    - name: lr           # single stage, two candidate values / 單一階段、兩個候選值
       values: [1.0e-4, 1.0e-5]
 
 hardware:

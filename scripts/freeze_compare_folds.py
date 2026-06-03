@@ -1,7 +1,9 @@
-"""彙整「多折」凍結比較（讀取 results/freeze_exp_folds/*.json）。
+"""Aggregate the multi-fold freeze comparison (results/freeze_exp_folds/*.json).
+彙整「多折」凍結比較（讀取 results/freeze_exp_folds/*.json）。
 
-逐策略列出各折的最佳驗證 AUC，加上跨折的 平均 ± 標準差，
-好讓策略之間的差距與「折間雜訊」做對照判斷。
+Per-fold best validation AUC for each strategy, plus the mean +/- std across folds,
+so the gap between strategies can be judged against fold-to-fold noise.
+逐策略列出各折的最佳驗證 AUC，加上跨折的 平均 ± 標準差，好讓策略之間的差距與「折間雜訊」做對照判斷。
 """
 import glob
 import json
@@ -28,12 +30,13 @@ def main(exp_dir="results/freeze_exp_folds"):
         if s not in by_strat:
             continue
         vals = [by_strat[s].get(o, float("nan")) for o in folds]
-        arr = np.array([v for v in vals if v == v])  # 濾掉 nan
+        arr = np.array([v for v in vals if v == v])  # drop nan / 濾掉 nan
         cells = "".join(f"  {v:5.3f}" if v == v else "    -- " for v in vals)
         msd = f"  {arr.mean():.3f} +/- {arr.std():.3f}" if len(arr) else ""
         print(f"{s:16s}{cells}{msd}")
 
-    # 兩兩對比：all vs freeze_heavy，逐折計算差值
+    # Head-to-head: all vs freeze_heavy, per-fold difference.
+    # 兩兩對比：all vs freeze_heavy，逐折計算差值。
     if "all" in by_strat and "freeze_heavy" in by_strat:
         print("\nper-fold (all - freeze_heavy):")
         diffs = []

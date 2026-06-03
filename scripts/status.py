@@ -1,7 +1,10 @@
-"""隨時查看 nested CV 的進度與「目前為止」的效能（讀 results/<exp>/）。
+"""Snapshot of nested-CV progress and the performance so far (reads results/<exp>/).
+隨時查看 nested CV 的進度與「目前為止」的效能（讀 results/<exp>/）。
 
     python -m scripts.status --config configs/swinunetr_i.yaml
 
+No need to wait for completion -- finished folds are aggregated live. For interactive
+loss/AUC curves use TensorBoard (see RUN.md); this is a quick terminal snapshot.
 不需等全部跑完 —— 已完成的折會即時納入彙總。互動式的 loss/AUC 曲線請用 TensorBoard
 （見 RUN.md）；本工具是終端機快速快照。
 """
@@ -24,7 +27,8 @@ def main():
     exp = cfg["experiment_name"]
     jobs_dir = os.path.join(cfg["output"]["root"], exp, "jobs")
 
-    # 總 job 數（與 dry-run 一致）：外層 x 候選值總數 x 內層 + refit
+    # Total job count (matches dry-run): outer x #candidates x inner + refit.
+    # 總 job 數（與 dry-run 一致）：外層 x 候選值總數 x 內層 + refit。
     outer = cfg["cv"]["outer_folds"]
     inner = cfg["cv"]["inner_folds"]
     n_cand = sum(len(s["values"]) for s in cfg["hpsearch"]["stages"])
@@ -39,7 +43,7 @@ def main():
     print(f"progress  : {done}/{total} jobs   "
           f"(inner {done_inner}/{total_inner}, refit {done_refit}/{outer})")
 
-    # 已完成的 refit/測試結果（逐折）
+    # Completed refit/test results, per fold. / 已完成的 refit/測試結果（逐折）。
     per_fold = []
     refits = sorted(glob.glob(os.path.join(jobs_dir, "*_refit_*.json")),
                     key=lambda f: json.load(open(f))["outer_fold"])

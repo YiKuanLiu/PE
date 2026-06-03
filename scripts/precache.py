@@ -1,8 +1,13 @@
-"""把影像預先快取到模型的工作解析度，加速訓練時的 I/O。
+"""Pre-cache volumes at the model's working resolution for fast training I/O.
+把影像預先快取到模型的工作解析度，加速訓練時的 I/O。
 
-從龐大的 ``.mat`` 讀取各相位，用「與模型相同的三線性內插」重採樣到 256x256x96，
-再存成 float32 ``.npy`` 到 ``data.cache_dir/<phase>/<filename>.npy``。
-這把每個體積從 ~200 MB（512x512x96 float64）縮到 ~24 MB，並省去每步的內插。
+Reads each phase from the large ``.mat`` files, resamples to 256x256x96 with the same
+trilinear interpolation the model uses, and saves float32 ``.npy`` files to
+``data.cache_dir/<phase>/<filename>.npy``. This shrinks each volume from ~200 MB
+(512x512x96 float64) to ~24 MB and removes the per-step interpolation.
+從龐大的 ``.mat`` 讀取各相位，用「與模型相同的三線性內插」重採樣到 256x256x96，再存成
+float32 ``.npy`` 到 ``data.cache_dir/<phase>/<filename>.npy``。把每個體積從 ~200 MB
+（512x512x96 float64）縮到 ~24 MB，並省去每步的內插。
 
     python -m scripts.precache --config configs/swinunetr_i.yaml
     python -m scripts.precache --config configs/swinunetr_i.yaml --phases T00 T50
@@ -18,14 +23,14 @@ from tqdm import tqdm
 
 from src.data import read_volume
 
-TARGET = (256, 256, 96)  # 與模型 forward 內的解析度一致
+TARGET = (256, 256, 96)  # must match the model's forward resolution / 與模型 forward 內的解析度一致
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--phases", nargs="+", default=None,
-                    help="要快取的相位（預設：config 的 data.phase）")
+                    help="phases to cache (default: config's data.phase) / 要快取的相位（預設：config 的 data.phase）")
     args = ap.parse_args()
 
     with open(args.config) as f:
@@ -45,7 +50,7 @@ def main():
         for fname in tqdm(filenames):
             out_path = os.path.join(out_dir, fname + ".npy")
             if os.path.exists(out_path):
-                continue  # 已存在則略過（可中斷續做）
+                continue  # already cached -> skip (resumable) / 已存在則略過（可中斷續做）
             vol = read_volume(os.path.join(data_dir, fname), phase)  # (1, X, Y, Z)
             vol = vol.unsqueeze(0)                                   # (1, 1, X, Y, Z)
             vol = F.interpolate(vol, size=TARGET, mode="trilinear")
