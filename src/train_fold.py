@@ -1,18 +1,15 @@
-"""Train one model on one data partition -- the atomic unit of the nested CV.
+"""在「一個資料分割」上訓練「一個模型」—— 巢狀 CV 的最小執行單元。
 
-Run as a subprocess by ``scripts/run_nested_cv.py`` (one GPU per job), or
-standalone for debugging.  Two modes:
+由 ``scripts/run_nested_cv.py`` 以子程序方式呼叫（一個 job 一張 GPU），
+也可單獨執行除錯。兩種模式：
 
-  * ``--mode inner --inner-fold K`` : train on the inner training split, validate
-    on the inner validation split, and record the best validation AUC (used to
-    rank hyper-parameters).  No model is written to disk.
+  * ``--mode inner --inner-fold K``：在內層訓練集上訓練、在內層驗證集上驗證，
+    記錄最佳驗證 AUC（用來排序超參數）。不存模型到磁碟。
 
-  * ``--mode refit``               : train on the outer pool's refit-train split
-    with early stopping on the refit-val split, then predict the held-out outer
-    test fold.  Per-sample test probabilities and metrics are saved.
+  * ``--mode refit``               ：在外層池的 refit-train 上訓練、用 refit-val
+    做 early stopping，然後預測被隔離的外層測試折。存下每筆測試機率與指標。
 
-The chosen GPU is selected by the caller via ``CUDA_VISIBLE_DEVICES`` (so this
-script always uses ``cuda:0``).
+所用的 GPU 由呼叫端透過 ``CUDA_VISIBLE_DEVICES`` 指定（故本程式一律用 ``cuda:0``）。
 """
 import argparse
 import json
@@ -30,6 +27,7 @@ from .models import SwinClassifierI, apply_freeze, load_pretrained
 
 
 def set_seed(seed):
+    """固定所有亂數來源，確保可重現。"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -41,22 +39,21 @@ def _loader(dataset, indices, batch_size, num_workers, shuffle):
                       num_workers=num_workers, pin_memory=True, drop_last=False)
 
 
-# bfloat16 autocast: A100 has native bf16 with fp32 exponent range, so it is
-# numerically stable here (plain fp16 overflows this SwinUNETR -> NaN logits)
-# and needs no GradScaler.
+# bfloat16 autocast：A100 原生支援 bf16，指數範圍同 fp32，數值穩定
+#（純 fp16 會讓此 SwinUNETR 溢位 → logits 變 NaN），且不需 GradScaler。
 AMP_DTYPE = torch.bfloat16
 
 
 @torch.no_grad()
 def evaluate(model, loader, device):
-    """Return (labels, probabilities) over a loader."""
+    """對一個 loader 回傳 (標籤, 機率)。"""
     model.eval()
     ys, ps = [], []
     for vol, label in loader:
         vol = vol.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda", dtype=AMP_DTYPE):
             logit = model(vol).squeeze(1)
-        prob = torch.sigmoid(logit.float())
+        prob = torch.sigmoid(logit.float())  # logits → 機率
         ys.append(label.numpy())
         ps.append(prob.cpu().numpy())
     return np.concatenate(ys), np.concatenate(ps)
@@ -65,21 +62,23 @@ def evaluate(model, loader, device):
 def train_one(dataset, train_idx, val_idx, hp, device, *, epochs, patience,
               batch_size, num_workers, pretrained_path, feature_size, seed,
               accum_steps=1, use_checkpoint=False, freeze="all", keep_best_model=False):
-    """Train with early stopping on validation AUC. Returns a result dict.
+    """以「驗證 AUC 的 early stopping」訓練，回傳結果字典。
 
-    ``batch_size`` is the per-step (single-GPU) batch; gradient accumulation over
-    ``accum_steps`` gives an effective batch of ``batch_size * accum_steps``
-    (the paper used effective batch 4, achieved as 1/GPU across 4 GPUs).
+    ``batch_size`` 是單卡的每步批次大小；透過 ``accum_steps`` 做梯度累積，
+    有效批次 = ``batch_size * accum_steps``
+    （論文用有效批次 4，是以 4 卡各 1 筆達成）。
     """
     set_seed(seed)
     train_loader = _loader(dataset, train_idx, batch_size, num_workers, shuffle=True)
     val_loader = _loader(dataset, val_idx, batch_size, num_workers, shuffle=False)
 
+    # 建模 → 載入預訓練權重 → 套用凍結策略
     model = SwinClassifierI(in_channels=1, n_class=1, feature_size=feature_size,
                             dropout=hp["dropout"], use_checkpoint=use_checkpoint).to(device)
     load_pretrained(model, pretrained_path, verbose=False)
     apply_freeze(model, freeze)
 
+    # 只把「可訓練」的參數交給 optimizer（凍結的不更新）
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
                                   lr=hp["lr"], weight_decay=hp["weight_decay"])
     criterion = torch.nn.BCEWithLogitsLoss()
@@ -97,18 +96,21 @@ def train_one(dataset, train_idx, val_idx, hp, device, *, epochs, patience,
             label = label.to(device, non_blocking=True)
             with torch.autocast(device_type="cuda", dtype=AMP_DTYPE):
                 logit = model(vol).squeeze(1)
-                loss = criterion(logit, label) / accum_steps
+                loss = criterion(logit, label) / accum_steps  # 除以累積步數
             loss.backward()
             running += loss.item() * accum_steps
+            # 每累積 accum_steps 步、或到最後一個 batch 才更新權重
             if (step + 1) % accum_steps == 0 or (step + 1) == n_batches:
                 optimizer.step()
                 optimizer.zero_grad()
 
+        # 每個 epoch 結束算一次驗證 AUC
         y, p = evaluate(model, val_loader, device)
         val_auc = roc_auc_score(y, p) if len(np.unique(y)) > 1 else float("nan")
         print(f"epoch {epoch+1}/{epochs}  train_loss={running/len(train_loader):.4f}  "
               f"val_auc={val_auc:.4f}  best={max(best_auc,0):.4f}", flush=True)
 
+        # AUC 有進步就更新最佳（並視需要保存最佳權重）；否則累加耐心計數
         if not np.isnan(val_auc) and val_auc > best_auc:
             best_auc, best_epoch, trigger = val_auc, epoch, 0
             if keep_best_model:
@@ -121,7 +123,7 @@ def train_one(dataset, train_idx, val_idx, hp, device, *, epochs, patience,
 
     result = {"best_val_auc": float(best_auc), "best_epoch": int(best_epoch)}
     if keep_best_model and best_state is not None:
-        model.load_state_dict(best_state)
+        model.load_state_dict(best_state)  # 還原到最佳權重供後續測試
     return result, model
 
 
@@ -135,7 +137,7 @@ def main():
     ap.add_argument("--lr", type=float, required=True)
     ap.add_argument("--weight-decay", type=float, required=True)
     ap.add_argument("--dropout", type=float, required=True)
-    ap.add_argument("--out", required=True, help="path to write the result JSON")
+    ap.add_argument("--out", required=True, help="結果 JSON 的輸出路徑")
     args = ap.parse_args()
 
     import yaml
@@ -151,6 +153,7 @@ def main():
     dataset = PEDataset(cfg["data"]["label_file"], cfg["data"]["data_dir"],
                         phase=cfg["data"]["phase"], cache_dir=cfg["data"].get("cache_dir"))
 
+    # train_one 共用的參數（兩種模式都一樣）
     common = dict(batch_size=cfg["training"]["batch_size"],
                   num_workers=cfg["training"]["num_workers"],
                   accum_steps=cfg["training"].get("accum_steps", 1),
@@ -160,6 +163,7 @@ def main():
                   feature_size=cfg["model"]["feature_size"], seed=cfg["seed"])
 
     if args.mode == "inner":
+        # 內層：訓練+驗證，只回報最佳驗證 AUC（用較少 epoch 預算）
         inner = fold["inner"][args.inner_fold]
         res, _ = train_one(dataset, inner["train_idx"], inner["val_idx"], hp, device,
                            epochs=cfg["hardware"]["inner_epochs"],
@@ -168,6 +172,7 @@ def main():
         res.update({"outer_fold": args.outer_fold, "inner_fold": args.inner_fold,
                     "mode": "inner", "hp": hp})
     else:  # refit
+        # refit：用完整 epoch 預算訓練，再在被隔離的外層測試折上評估
         res, model = train_one(dataset, fold["refit_train_idx"], fold["refit_val_idx"],
                                hp, device, epochs=cfg["training"]["epochs"],
                                patience=cfg["training"]["patience"],

@@ -1,11 +1,10 @@
-"""Nested cross-validation split generation.
+"""巢狀交叉驗證（nested CV）的切分產生。
 
-Outer: stratified 10-fold for unbiased performance estimation.
-Inner: stratified 5-fold *within each outer training pool* for HP selection.
+外層：分層 10-fold，用於「無偏的效能估計」。
+內層：在「每個外層的訓練池內」再做分層 5-fold，用於「選超參數」。
 
-Splits are generated once, seeded, and saved to JSON (as sample indices and
-filenames) so that every hyper-parameter configuration is evaluated on exactly
-the same partitions -- a fair comparison and fully reproducible.
+切分只產生一次、固定亂數種子並存成 JSON（記錄樣本索引與檔名），
+讓每組超參數都在完全相同的分割上評估 —— 既公平又可完整重現。
 """
 import json
 
@@ -22,7 +21,7 @@ def build_nested_splits(labels, filenames, outer_folds=10, inner_folds=5, seed=4
               "n_samples": int(len(labels)), "folds": []}
 
     for o, (train_idx, test_idx) in enumerate(outer.split(idx_all, labels)):
-        # Inner stratified k-fold on the outer training pool only.
+        # 內層分層 k-fold —— 只在「外層訓練池」上切，絕不碰外層測試折（避免洩漏）
         inner = StratifiedKFold(n_splits=inner_folds, shuffle=True, random_state=seed + o)
         inner_splits = []
         pool_labels = labels[train_idx]
@@ -33,15 +32,15 @@ def build_nested_splits(labels, filenames, outer_folds=10, inner_folds=5, seed=4
                 "val_idx": train_idx[va].tolist(),
             })
 
-        # A fixed stratified 10% validation slice of the outer pool, used for
-        # early stopping when refitting with the selected hyper-parameters.
+        # 從外層訓練池另切一份固定的分層 10% 驗證集，
+        # 供「用選定超參數 refit 時」做 early stopping 用。
         refit_inner = StratifiedKFold(n_splits=10, shuffle=True, random_state=seed + 100 + o)
         rt, rv = next(iter(refit_inner.split(train_idx, pool_labels)))
 
         splits["folds"].append({
             "outer_fold": o,
-            "train_idx": train_idx.tolist(),
-            "test_idx": test_idx.tolist(),
+            "train_idx": train_idx.tolist(),     # 外層訓練池（9 折）
+            "test_idx": test_idx.tolist(),       # 外層測試折（1 折，全程隔離）
             "refit_train_idx": train_idx[rt].tolist(),
             "refit_val_idx": train_idx[rv].tolist(),
             "inner": inner_splits,

@@ -1,8 +1,8 @@
-"""Dataset for single-phase (inhalation / T00) PE classification.
+"""單相位（吸氣 / T00）PE 分類的資料集。
 
-Each pre-processed ``.mat`` file holds two variables, ``T00`` (inhalation) and
-``T50`` (exhalation), both already cropped to 512x512x96, HU-clipped to
-[-1000, 400] and normalised to [0, 1].  The single-phase model uses ``T00``.
+每個預處理過的 ``.mat`` 檔含兩個變數：``T00``（吸氣）與 ``T50``（吐氣），
+皆已裁切成 512x512x96、HU 值截斷到 [-1000, 400] 並正規化到 [0, 1]。
+單相位模型只用 ``T00``。
 """
 import os
 
@@ -14,24 +14,24 @@ from torch.utils.data import Dataset
 
 
 def read_volume(path, phase="T00"):
-    """Load one phase from a ``.mat`` file as a float32 tensor of shape (1, X, Y, Z)."""
+    """從 ``.mat`` 載入指定相位，回傳形狀為 (1, X, Y, Z) 的 float32 tensor。"""
     mat = loadmat(path)
     if phase in mat:
         cube = mat[phase]
     else:
-        # Fall back to positional order (skip __header__/__version__/__globals__).
+        # 找不到指定相位名稱時，退而用位置順序取（略過 __header__/__version__/__globals__）。
         keys = [k for k in mat.keys() if not k.startswith("__")]
         cube = mat[keys[0]]
     cube = np.asarray(cube, dtype=np.float32)
-    return torch.from_numpy(cube).unsqueeze(0)  # add channel dim
+    return torch.from_numpy(cube).unsqueeze(0)  # 加上 channel 維度
 
 
 class PEDataset(Dataset):
-    """Reads ``label.csv`` (filename,label) and returns (volume, label[, filename]).
+    """讀取 ``label.csv``（filename,label），回傳 (volume, label[, filename])。
 
-    If ``cache_dir`` is given, volumes are loaded from pre-cached ``.npy`` files
-    at ``cache_dir/<phase>/<filename>.npy`` (256x256x96 float32) instead of the
-    large ``.mat`` files -- far faster I/O. See ``scripts/precache.py``.
+    若提供 ``cache_dir``，則改從預先快取好的 ``.npy``
+    （``cache_dir/<phase>/<filename>.npy``，256x256x96 float32）載入，
+    而非讀取龐大的 ``.mat`` —— I/O 快很多。見 ``scripts/precache.py``。
     """
 
     def __init__(self, label_file, img_dir, phase="T00", return_filename=False,
@@ -47,7 +47,7 @@ class PEDataset(Dataset):
 
     @property
     def labels(self):
-        """Integer label array -- used by the stratified CV splitters."""
+        """整數標籤陣列 —— 供分層 CV 切分器使用。"""
         return self.df.iloc[:, 1].to_numpy().astype(int)
 
     @property
@@ -57,6 +57,7 @@ class PEDataset(Dataset):
     def __getitem__(self, idx):
         fname = self.df.iloc[idx, 0]
         if self.cache_dir:
+            # 走快取：直接讀 256x256x96 的 .npy，省去 .mat 解壓與降採樣
             arr = np.load(os.path.join(self.cache_dir, self.phase, fname + ".npy"))
             volume = torch.from_numpy(arr).unsqueeze(0)  # (1, X, Y, Z) float32
         else:

@@ -1,8 +1,8 @@
-"""Generate and save the nested CV splits for an experiment.
+"""為一個實驗產生並儲存巢狀 CV 切分。
 
     python -m scripts.make_splits --config configs/swinunetr_i.yaml
 
-Splits depend only on labels + filenames (no volume loading), so this is fast.
+切分只依賴 標籤 + 檔名（不載入影像），所以很快。
 """
 import argparse
 import os
@@ -21,6 +21,7 @@ def main():
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
+    # 只需要標籤與檔名，故不傳 cache_dir、不會載入體積資料
     ds = PEDataset(cfg["data"]["label_file"], cfg["data"]["data_dir"],
                    phase=cfg["data"]["phase"])
     splits = build_nested_splits(

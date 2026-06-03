@@ -1,19 +1,17 @@
-"""Nested cross-validation orchestrator with staged hyper-parameter search.
+"""巢狀交叉驗證的協調器（orchestrator），含「分階段超參數搜尋」。
 
-Design
-------
-* Outer 10-fold estimates performance; inner 5-fold selects hyper-parameters.
-* Hyper-parameters are tuned in *stages* (lr -> weight_decay -> dropout):
-  each stage tunes one parameter over a small grid while freezing the winners
-  of previous stages.
-* Stages run in lockstep across all outer folds.  Within a stage, every inner
-  job (outer_fold x candidate_value x inner_fold) is independent, so they are
-  dispatched concurrently -- one job per GPU across the configured GPUs.
-* Every job writes a result JSON; the orchestrator is fully **resumable**
-  (a job whose result file already exists is skipped).
+設計
+----
+* 外層 10-fold 估計效能；內層 5-fold 選超參數。
+* 超參數以「階段」方式調（lr -> weight_decay -> dropout）：每階段只調一個參數、
+  並把前面階段的勝出值固定下來。
+* 各階段在所有外層折之間「同步」進行。同一階段內，每個內層 job
+  （外層折 x 候選值 x 內層折）彼此獨立，因此會並行派發 —— 一個 job 一張 GPU。
+* 每個 job 都會寫出結果 JSON；協調器「完全可續跑」
+  （結果檔已存在的 job 會被略過）。
 
-Usage
------
+用法
+----
     python -m scripts.make_splits   --config configs/swinunetr_i.yaml
     python -m scripts.run_nested_cv --config configs/swinunetr_i.yaml
     python -m scripts.run_nested_cv --config configs/swinunetr_i.yaml --dry-run
@@ -40,16 +38,19 @@ def fmt(x):
 
 
 def hp_tag(hp):
+    """把一組超參數轉成檔名安全的字串標籤。"""
     return f"lr{fmt(hp['lr'])}_wd{fmt(hp['weight_decay'])}_do{fmt(hp['dropout'])}"
 
 
 def job_out_path(jobs_dir, outer, mode, hp, inner=None):
+    """依 (外層折, 模式, 超參數) 推導「確定性」的結果檔路徑 —— 這是可續跑的關鍵。"""
     if mode == "inner":
         return os.path.join(jobs_dir, f"o{outer}_inner{inner}_{hp_tag(hp)}.json")
     return os.path.join(jobs_dir, f"o{outer}_refit_{hp_tag(hp)}.json")
 
 
 def is_done(path):
+    """結果檔存在且能成功解析 JSON，才算完成。"""
     if not os.path.exists(path):
         return False
     try:
@@ -61,6 +62,7 @@ def is_done(path):
 
 
 def make_job(cfg_path, splits_path, outer, mode, hp, out_path, inner=None, log_path=None):
+    """組出一個「呼叫 src.train_fold 子程序」的工作描述。"""
     cmd = [sys.executable, "-m", "src.train_fold",
            "--config", cfg_path, "--splits", splits_path,
            "--outer-fold", str(outer), "--mode", mode,
@@ -73,7 +75,7 @@ def make_job(cfg_path, splits_path, outer, mode, hp, out_path, inner=None, log_p
 
 
 def run_jobs(jobs, gpus, poll=5.0):
-    """Run jobs concurrently, one per GPU, skipping already-finished ones."""
+    """並行執行一批 job（一張 GPU 一個），並略過已完成的。"""
     pending = [j for j in jobs if not is_done(j["out"])]
     skipped = len(jobs) - len(pending)
     if skipped:
@@ -86,15 +88,14 @@ def run_jobs(jobs, gpus, poll=5.0):
     done = 0
     total = len(pending)
     while queue or running:
-        # dispatch to free GPUs
+        # 把待辦 job 派發到空閒的 GPU
         for gpu in gpus:
             if gpu in running or not queue:
                 continue
             job = queue.pop(0)
-            # CUDA_DEVICE_ORDER=PCI_BUS_ID makes CUDA's device indices match
-            # nvidia-smi's, so the GPU ids in the config select the intended
-            # cards (otherwise CUDA's default FASTEST_FIRST order can map an id
-            # onto the small display GPU and OOM).
+            # CUDA_DEVICE_ORDER=PCI_BUS_ID 讓 CUDA 的裝置編號與 nvidia-smi 一致，
+            # 這樣 config 裡的 GPU id 才會選到正確的卡（否則 CUDA 預設的
+            # FASTEST_FIRST 順序可能把某個 id 對應到小顯示卡而 OOM）。
             env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(gpu),
                        CUDA_DEVICE_ORDER="PCI_BUS_ID")
             log_fh = open(job["log"], "w") if job["log"] else None
@@ -102,7 +103,7 @@ def run_jobs(jobs, gpus, poll=5.0):
                                  stdout=log_fh, stderr=subprocess.STDOUT)
             running[gpu] = (p, job, log_fh)
             print(f"  -> GPU{gpu}: {job['desc']}", flush=True)
-        # poll
+        # 輪詢已結束的 job，釋放其 GPU 供下一個使用
         time.sleep(poll)
         for gpu, (p, job, log_fh) in list(running.items()):
             if p.poll() is None:
@@ -124,6 +125,7 @@ def read_result(path):
 
 
 def mean_inner_auc(jobs_dir, outer, hp, inner_folds):
+    """某外層折、某組超參數，在所有內層折上的平均驗證 AUC（用來排序超參數）。"""
     aucs = []
     for k in range(inner_folds):
         path = job_out_path(jobs_dir, outer, "inner", hp, inner=k)
@@ -135,11 +137,11 @@ def mean_inner_auc(jobs_dir, outer, hp, inner_folds):
 
 
 def aggregate(cfg, splits, jobs_dir, out_dir):
-    """Collect refit/test results into per-fold + pooled summaries."""
+    """把各折的 refit/測試結果彙整成 逐折 + 彙總 的摘要。"""
     selected, per_fold, pooled_true, pooled_score = [], [], [], []
     for fold in splits["folds"]:
         o = fold["outer_fold"]
-        # find the refit result for this fold (there should be exactly one)
+        # 找這一折的 refit 結果（正常情況下恰好一個）
         cand = [f for f in os.listdir(jobs_dir) if f.startswith(f"o{o}_refit_") and f.endswith(".json")]
         if not cand:
             print(f"  [warn] outer fold {o}: no refit result yet")
@@ -147,20 +149,20 @@ def aggregate(cfg, splits, jobs_dir, out_dir):
         res = read_result(os.path.join(jobs_dir, cand[0]))
         selected.append({"outer_fold": o, "hp": res["hp"], **res.get("test_metrics", {})})
         per_fold.append(res["test_metrics"])
-        pooled_true += res["test"]["y_true"]
+        pooled_true += res["test"]["y_true"]      # 彙總所有折的測試預測
         pooled_score += res["test"]["y_score"]
 
     summary = {"experiment": cfg["experiment_name"], "n_outer_folds": len(per_fold),
                "selected_per_fold": selected}
     if per_fold:
-        summary["across_folds_mean_ci"] = summarise_across_folds(per_fold)
+        summary["across_folds_mean_ci"] = summarise_across_folds(per_fold)        # 跨折平均±CI（論文用）
         summary["pooled_bootstrap_ci"] = metrics_with_bootstrap_ci(pooled_true, pooled_score)
         summary["pooled_point"] = point_metrics(pooled_true, pooled_score)
 
     with open(os.path.join(out_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
-    # pretty print
+    # 美化輸出
     print("\n" + "=" * 64)
     print(f"  Nested CV summary: {cfg['experiment_name']}  ({len(per_fold)} outer folds)")
     print("=" * 64)
@@ -175,9 +177,9 @@ def aggregate(cfg, splits, jobs_dir, out_dir):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
-    ap.add_argument("--dry-run", action="store_true", help="print the plan, run nothing")
-    ap.add_argument("--only-aggregate", action="store_true", help="just rebuild summary.json")
-    ap.add_argument("--max-parallel", type=int, default=None, help="override GPU count")
+    ap.add_argument("--dry-run", action="store_true", help="只印出計畫、不實際執行")
+    ap.add_argument("--only-aggregate", action="store_true", help="只重建 summary.json")
+    ap.add_argument("--max-parallel", type=int, default=None, help="覆寫使用的 GPU 數")
     args = ap.parse_args()
 
     with open(args.config) as f:
@@ -207,7 +209,7 @@ def main():
                   "weight_decay": cfg["training"]["weight_decay"],
                   "dropout": cfg["training"]["dropout"]}
 
-    # per-fold running "best" hyper-parameters, refined stage by stage
+    # 每個外層折各自維護一份「目前最佳超參數」，隨階段逐步精修
     best = {fold["outer_fold"]: dict(default_hp) for fold in splits["folds"]}
     n_outer = len(splits["folds"])
 
@@ -219,22 +221,23 @@ def main():
         print(f"GPUs: {gpus}")
         return
 
-    # ---- staged inner search, in lockstep across folds ----
+    # ---- 分階段內層搜尋，所有折同步進行 ----
     for si, stage in enumerate(stages):
         param, values = stage["name"], stage["values"]
         print(f"\n### Stage {si+1}/{len(stages)}: tuning '{param}' over {values}")
         batch = []
+        # 收集這一階段「所有折 x 所有候選值 x 所有內層折」的內層 job
         for fold in splits["folds"]:
             o = fold["outer_fold"]
             for val in values:
-                hp = dict(best[o]); hp[param] = val
+                hp = dict(best[o]); hp[param] = val      # 在該折目前最佳上，替換正在調的參數
                 for k in range(inner_folds):
                     out_p = job_out_path(jobs_dir, o, "inner", hp, inner=k)
                     log_p = os.path.join(logs_dir, os.path.basename(out_p).replace(".json", ".log"))
                     batch.append(make_job(args.config, splits_path, o, "inner", hp, out_p, inner=k, log_path=log_p))
         run_jobs(batch, gpus)
 
-        # pick winners for this stage, per fold
+        # 逐折挑出這一階段的勝出值（平均內層 AUC 最高者）
         for fold in splits["folds"]:
             o = fold["outer_fold"]
             scored = []
@@ -247,7 +250,7 @@ def main():
                 best[o][param] = win[0]
                 print(f"  fold {o}: best {param}={fmt(win[0])} (inner AUC={win[1]:.3f})")
 
-    # ---- refit with selected HP and evaluate on outer test folds ----
+    # ---- 以選定的超參數 refit，並在外層測試折上評估 ----
     print(f"\n### Refit + test on {n_outer} outer folds")
     with open(os.path.join(out_dir, "selected_hp.json"), "w") as f:
         json.dump(best, f, indent=2)

@@ -1,8 +1,8 @@
-"""Small experiment: compare freezing strategies on one fixed data split.
+"""小實驗：在「同一個固定資料分割」上比較各種凍結策略。
 
-Trains the SwinUNETR-I model under a given freeze strategy on outer-fold 0 /
-inner-fold 0 (so all strategies see identical data), logging the validation-AUC
-trajectory and the train/val gap (overfitting). Run one strategy per GPU:
+對給定的凍結策略，在 外層折 / 內層折 上訓練 SwinUNETR-I 模型
+（所有策略看到完全相同的資料），記錄驗證 AUC 的逐 epoch 軌跡
+與 train/val 落差（過擬合）。一張 GPU 跑一個策略：
 
     for s in all freeze_swinvit freeze_heavy head_only; do
       CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu> \
@@ -10,7 +10,7 @@ trajectory and the train/val gap (overfitting). Run one strategy per GPU:
         --strategy $s --out results/freeze_exp/$s.json &
     done
 
-Compare the resulting JSONs (best val AUC, epochs-to-best, train loss).
+再比較各 JSON（最佳驗證 AUC、達標 epoch 數、train loss）。
 """
 import argparse
 import json
@@ -41,6 +41,7 @@ def main():
     import yaml
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+    # 取用既有的巢狀切分中，指定外層/內層折的 train/val 索引
     splits = load_splits(os.path.join(cfg["output"]["root"], cfg["experiment_name"], "splits.json"))
     inner = splits["folds"][args.outer_fold]["inner"][args.inner_fold]
     train_idx, val_idx = inner["train_idx"], inner["val_idx"]
@@ -55,6 +56,7 @@ def main():
                               num_workers=nw, pin_memory=True)
     val_loader = DataLoader(Subset(ds, val_idx), batch_size=bs, shuffle=False, num_workers=nw)
 
+    # 建模 → 載入預訓練 → 套用凍結策略，並印出可訓練參數比例
     model = SwinClassifierI(feature_size=cfg["model"]["feature_size"],
                             use_checkpoint=cfg["model"].get("use_checkpoint", False)).to(device)
     load_pretrained(model, cfg["model"]["pretrained_path"], verbose=False)
@@ -75,11 +77,12 @@ def main():
         for step, (vol, label) in enumerate(train_loader):
             vol, label = vol.to(device), label.to(device)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                loss = crit(model(vol).squeeze(1), label) / accum
+                loss = crit(model(vol).squeeze(1), label) / accum  # 梯度累積
             loss.backward()
             running += loss.item() * accum
             if (step + 1) % accum == 0 or (step + 1) == n_batches:
                 opt.step(); opt.zero_grad()
+        # 記錄這個 epoch 的 train loss 與驗證 AUC（整條軌跡）
         y, p = evaluate(model, val_loader, device)
         auc = roc_auc_score(y, p) if len(np.unique(y)) > 1 else float("nan")
         tl = running / n_batches
@@ -96,7 +99,8 @@ def main():
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
-        json.dump({"strategy": args.strategy, "n_trainable": n_train, "n_total": n_total,
+        json.dump({"strategy": args.strategy, "outer_fold": args.outer_fold,
+                   "inner_fold": args.inner_fold, "n_trainable": n_train, "n_total": n_total,
                    "best_val_auc": float(best_auc), "best_epoch": best_epoch,
                    "trajectory": traj}, f, indent=2)
     print(f"[{args.strategy}] WROTE {args.out}", flush=True)
