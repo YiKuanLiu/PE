@@ -12,6 +12,9 @@ import argparse
 import glob
 import json
 import os
+import time
+from collections import defaultdict
+from datetime import datetime
 
 import yaml
 
@@ -42,6 +45,36 @@ def main():
     print(f"experiment: {exp}")
     print(f"progress  : {done}/{total} jobs   "
           f"(inner {done_inner}/{total_inner}, refit {done_refit}/{outer})")
+
+    # --- ETA from the pace of completed jobs / 依完成速度推算剩餘時間 ---
+    job_files = glob.glob(os.path.join(jobs_dir, "*.json"))
+    if len(job_files) >= 2 and done < total:
+        mtimes = sorted(os.path.getmtime(f) for f in job_files)
+        span = mtimes[-1] - mtimes[0]  # active working span / 實際工作時間跨度
+        if span > 0:
+            rate = (len(mtimes) - 1) / span        # jobs/sec / 每秒完成的 job 數
+            remaining = total - done
+            eta_sec = remaining / rate
+            finish = time.time() + eta_sec
+            print(f"pace      : {rate*3600:.1f} jobs/hr | remaining {remaining} jobs "
+                  f"~ {eta_sec/3600:.0f} h ({eta_sec/86400:.1f} d)")
+            print(f"est.finish: {datetime.fromtimestamp(finish):%Y-%m-%d %H:%M} "
+                  f"(rough; the final {outer} refit jobs run longer than inner ones)")
+
+    # --- Best hyper-parameter combo so far (inner search) / 目前最佳超參數組合 ---
+    combo = defaultdict(list)
+    for f in glob.glob(os.path.join(jobs_dir, "*_inner*.json")):
+        d = json.load(open(f))
+        hp = d.get("hp", {})
+        v = d.get("best_val_auc")
+        if v is not None and v == v and v >= 0:  # exclude nan / -1 sentinel
+            combo[(hp.get("lr"), hp.get("weight_decay"), hp.get("dropout"))].append(v)
+    if combo:
+        ranked = sorted(((sum(vs) / len(vs), len(vs), k) for k, vs in combo.items()),
+                        reverse=True)
+        print("\ntop hyper-parameter combos so far (mean inner-val AUC):")
+        for mean_auc, n, (lr, wd, do) in ranked[:3]:
+            print(f"  val AUC {mean_auc:.3f} (n={n} folds)  lr={lr} wd={wd} dropout={do}")
 
     # Completed refit/test results, per fold. / 已完成的 refit/測試結果（逐折）。
     per_fold = []
