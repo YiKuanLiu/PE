@@ -1,13 +1,14 @@
-"""Dataset for single-phase (inhalation / T00) PE classification.
-單相位（吸氣 / T00）PE 分類的資料集。
+"""Datasets for PE classification.
+PE 分類的資料集。
 
-Each preprocessed ``.mat`` holds two variables, ``T00`` (inhalation) and ``T50``
-(exhalation), already cropped to 512x512x96, HU-clipped to [-1000, 400] and
-normalised to [0, 1]. The single-phase model uses ``T00``.
-每個預處理過的 ``.mat`` 含兩個變數：``T00``（吸氣）與 ``T50``（吐氣），皆已裁切成
-512x512x96、HU 值截斷到 [-1000, 400] 並正規化到 [0, 1]。單相位模型只用 ``T00``。
+PEDataset    -- single-phase (inhalation / T00), baseline / 單相位 baseline。
+PEDatasetIE  -- dual-phase lung-ROI volumes (T00 + T50) + optional 3D augmentation /
+                雙相位肺部 ROI（吸氣+吐氣）+ 可選 3D 增強。
+
+Each preprocessed ``.mat`` holds T00 (inhale) and T50 (exhale); see scripts/precache*.
 """
 import os
+import random
 
 import numpy as np
 import pandas as pd
@@ -23,27 +24,17 @@ def read_volume(path, phase="T00"):
     if phase in mat:
         cube = mat[phase]
     else:
-        # Fall back to positional order (skip __header__/__version__/__globals__).
-        # 找不到指定相位名稱時，退而用位置順序取（略過 __header__/__version__/__globals__）。
         keys = [k for k in mat.keys() if not k.startswith("__")]
         cube = mat[keys[0]]
     cube = np.asarray(cube, dtype=np.float32)
-    return torch.from_numpy(cube).unsqueeze(0)  # add channel dim / 加上 channel 維度
+    return torch.from_numpy(cube).unsqueeze(0)
 
 
 class PEDataset(Dataset):
-    """Reads ``label.csv`` (filename,label); returns (volume, label[, filename]).
-    讀取 ``label.csv``（filename,label），回傳 (volume, label[, filename])。
+    """Single-phase: reads ``label.csv`` (filename,label); returns (volume, label[, filename]).
+    單相位：讀 ``label.csv``，回傳 (volume, label[, filename])。從 ``cache_dir`` 載入 .npy（若提供）。"""
 
-    If ``cache_dir`` is given, volumes are loaded from pre-cached ``.npy`` files
-    (``cache_dir/<phase>/<filename>.npy``, 256x256x96 float32) instead of the large
-    ``.mat`` -- far faster I/O. See ``scripts/precache.py``.
-    若提供 ``cache_dir``，則改從預先快取的 ``.npy``（``cache_dir/<phase>/<filename>.npy``，
-    256x256x96 float32）載入，而非讀龐大的 ``.mat`` —— I/O 快很多。見 ``scripts/precache.py``。
-    """
-
-    def __init__(self, label_file, img_dir, phase="T00", return_filename=False,
-                 cache_dir=None):
+    def __init__(self, label_file, img_dir, phase="T00", return_filename=False, cache_dir=None):
         self.df = pd.read_csv(label_file, header=None)
         self.img_dir = img_dir
         self.phase = phase
@@ -55,8 +46,6 @@ class PEDataset(Dataset):
 
     @property
     def labels(self):
-        """Integer label array -- used by the stratified CV splitters.
-        整數標籤陣列 —— 供分層 CV 切分器使用。"""
         return self.df.iloc[:, 1].to_numpy().astype(int)
 
     @property
@@ -66,13 +55,74 @@ class PEDataset(Dataset):
     def __getitem__(self, idx):
         fname = self.df.iloc[idx, 0]
         if self.cache_dir:
-            # Cached path: load the 256x256x96 .npy directly (skip .mat decode + resize).
-            # 走快取：直接讀 256x256x96 的 .npy，省去 .mat 解壓與降採樣。
             arr = np.load(os.path.join(self.cache_dir, self.phase, fname + ".npy"))
-            volume = torch.from_numpy(arr).unsqueeze(0)  # (1, X, Y, Z) float32
+            volume = torch.from_numpy(arr).unsqueeze(0)
         else:
             volume = read_volume(os.path.join(self.img_dir, fname), self.phase)
         label = torch.tensor(float(self.df.iloc[idx, 1]), dtype=torch.float32)
         if self.return_filename:
             return volume, label, fname
         return volume, label
+
+
+def _rand_aug_params():
+    """Sample one set of augmentation params (shared across both phases of a sample).
+    抽一組增強參數（同一樣本的兩個相位共用，保持一致）。"""
+    return dict(fx=random.random() < 0.5,                 # flip L-R / 左右翻轉
+                fy=random.random() < 0.5,                 # flip A-P / 前後翻轉
+                scale=random.uniform(0.9, 1.1),           # intensity scale / 強度縮放
+                shift=random.uniform(-0.05, 0.05))        # intensity shift / 強度平移
+
+
+def _apply_aug(vol, p):
+    """vol: (1, X, Y, Z) tensor in [0,1]."""
+    if p["fx"]:
+        vol = torch.flip(vol, dims=[1])
+    if p["fy"]:
+        vol = torch.flip(vol, dims=[2])
+    return torch.clamp(vol * p["scale"] + p["shift"], 0.0, 1.0)
+
+
+class PEDatasetIE(Dataset):
+    """Dual-phase lung-ROI dataset; returns (vol_T00, vol_T50, label[, filename]).
+    雙相位肺部 ROI 資料集；回傳 (vol_T00, vol_T50, label[, filename])。
+
+    Loads 256x256x96 float32 ROI volumes from ``cache_dir/<phase>/<filename>.npy``
+    (built by scripts/precache_roi.py). With ``augment=True`` the SAME random spatial
+    transform is applied to both phases (kept consistent).
+    從 ``cache_dir/<phase>/<filename>.npy`` 載入 ROI 體積；augment=True 時兩相位套用相同的隨機變換。
+    """
+
+    def __init__(self, label_file, cache_dir, phases=("T00", "T50"),
+                 augment=False, return_filename=False):
+        self.df = pd.read_csv(label_file, header=None)
+        self.cache_dir = cache_dir
+        self.phases = list(phases)
+        self.augment = augment
+        self.return_filename = return_filename
+
+    def __len__(self):
+        return len(self.df)
+
+    @property
+    def labels(self):
+        return self.df.iloc[:, 1].to_numpy().astype(int)
+
+    @property
+    def filenames(self):
+        return self.df.iloc[:, 0].tolist()
+
+    def __getitem__(self, idx):
+        fname = self.df.iloc[idx, 0]
+        vols = []
+        for ph in self.phases:
+            arr = np.load(os.path.join(self.cache_dir, ph, fname + ".npy"))
+            vols.append(torch.from_numpy(arr).unsqueeze(0))  # (1, X, Y, Z)
+        if self.augment:
+            p = _rand_aug_params()
+            vols = [_apply_aug(v, p) for v in vols]
+        label = torch.tensor(float(self.df.iloc[idx, 1]), dtype=torch.float32)
+        out = (*vols, label)
+        if self.return_filename:
+            out = (*out, fname)
+        return out

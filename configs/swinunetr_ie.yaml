@@ -1,0 +1,45 @@
+# =====================================================================
+# SwinUNETR-IE : dual-phase (inhale T00 + exhale T50), lung-ROI cropped
+#                雙相位 + 肺部 ROI 裁切（可行性測試用）
+# Reuses the same 125 patients / label.csv / CV splits as swinunetr_i,
+# so results are directly comparable to the single-phase baseline.
+# 沿用與 swinunetr_i 相同的 125 例 / label.csv / 切分 -> 可直接對照單相位 baseline。
+# =====================================================================
+experiment_name: swinunetr_ie
+seed: 42
+
+data:
+  raw_dir:    /home/yikuan/PE                 # raw .mat (T00,T50,*_Lobe) / 原始檔
+  label_file: /mnt/hot/public/Yi-Kuan/PE/original_size_crop51251296/label.csv
+  cache_dir:  /home/yikuan/PE_project/cache_roi   # ROI-cropped dual-phase npy cache
+  phases: [T00, T50]                          # dual-phase / 雙相位
+
+model:
+  pretrained_path: /home/yikuan/Yi-Kuan/Large-Scale-Medical-main/pretrained/VoComni_L.pt
+  feature_size: 96
+  in_channels: 1
+  use_checkpoint: false
+  freeze: all
+
+cv:
+  outer_folds: 10
+  inner_folds: 5
+
+training:
+  epochs: 1000
+  patience: 150
+  batch_size: 1
+  accum_steps: 4
+  num_workers: 4
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  dropout: 0.0
+  augment: true        # 3D augmentation on the training set / 訓練集做 3D 增強
+
+hardware:
+  gpus: [0, 1, 2, 4]
+  inner_epochs: 100
+  inner_patience: 20
+
+output:
+  root: results
