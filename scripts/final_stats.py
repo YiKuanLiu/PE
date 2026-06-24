@@ -25,7 +25,7 @@ def rf_oof(X):
 
 
 OOF, TRAIN = {}, {}
-OOF["Features (21)"] = np.load("results/mil/tuned_bands.npz")["oof"]
+OOF["Features (21)"] = np.load("results/mil/oof_feat_mean.npz")["oof_feat"]
 for key, fn in [("Image CNN (no mask)", "oof_image_nomask"), ("Hybrid (no mask)", "oof_hybrid_nomask"),
                 ("Image CNN + mask", "oof_image_mask"), ("Hybrid + mask", "oof_hybrid_mask")]:
     d = json.load(open(f"results/mil/{fn}.json")); OOF[key] = np.array(d["oof"]); TRAIN[key] = d["train_auc"]

@@ -19,11 +19,14 @@ META = [
     ("Hybrid (no mask)",     "Hybrid CNN + features",                      "cnn"),
     ("Features (21)",        "Per-lobe features (V/Q+hyperattenuation) ‡", "feat"),
     ("V/Q features",         "V/Q indices only",                           "feat"),
-    ("Radiomics",            "Whole-lobe radiomics",                       "feat"),
+    ("Radiomics",            "Whole-lung radiomics",                       "feat"),
     ("SwinUNETR-I (DL)",     "SwinUNETR (deep, single-phase)",             "dl"),
     ("Image CNN (no mask)",  "Image-only CNN (no mask)",                   "dl"),
 ]
-rows = [(lbl, cat, S[k]["metrics"]["AUC"], S[k]["ci"][0], S[k]["ci"][1]) for k, lbl, cat in META]
+# methods that genuinely use multiple-instance learning (per-lobe mean pooling) / 真正用 MIL 的方法
+MIL = {"Hybrid + mask", "Image CNN + mask", "Hybrid (no mask)", "Features (21)", "V/Q features", "Image CNN (no mask)"}
+rows = [(lbl + (" [MIL]" if k in MIL else ""), cat, S[k]["metrics"]["AUC"], S[k]["ci"][0], S[k]["ci"][1])
+        for k, lbl, cat in META]
 rows.sort(key=lambda r: r[2])                       # ascending -> best at top / 由小到大,最佳在最上
 
 # ===== Figure 1a: AUC + 95% CI =====
