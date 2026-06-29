@@ -24,6 +24,8 @@ Models:
 * Masked CNN
 * Hybrid Masked CNN + 21 features
 
+## Data Availability
+The medical datasets generated and analyzed during the current study are not publicly available due to patient privacy and ethical restrictions under the Institutional Review Board guidelines. However, de-identified participant data are available from the corresponding author upon reasonable request. To obtain access, requestors must provide a formal research proposal and sign a Data Use Agreement (DUA). The corresponding author will respond to such requests within days.
 
 ## Layout
 
