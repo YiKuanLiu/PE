@@ -1,38 +1,29 @@
-# PE — Pulmonary Embolism Classification from Single-Phase NCCT
+# PE — Pulmonary Embolism Classification from Non-contrast CT Images
+Implementation of the NCCT-based pulmonary embolism (PE) classification study
+with a rigorous nested cross-validation protocol for evaluation and hyper-parameter tuning (using inner fold).
 
-Re-implementation of the NCCT-based pulmonary embolism (PE) classification study
-with a **rigorous nested cross-validation** protocol for hyper-parameter tuning.
+This repo builds up the scripts from image processing using Matlab, generating features, 
+and finally train 8 different models for the classification task. 
+The models can be divided in 3 main categories:
+1. Pure imaged-based deep learning models
+2. Feature based MLP models
+3. Hybrid models that combine deep learning and meaningful features
 
-This repo rebuilds the training pipeline from the (rejected) draft so experiments
-can be re-run cleanly. The headline methodological change is **nested CV**
-(outer 10-fold for performance estimation, inner 5-fold for HP selection),
-replacing the previous single internal validation split.
+In this study, we applied multi-instance learning (MIL) for pooling the embeddings from each lobe (if applicable).
+Also, we evaluated the model performances by averaging the output probabilities from 5 different random seeds.
 
-## Method (first model: SwinUNETR-I)
+## Methods
 
-* **Backbone**: VoComni-pretrained SwinUNETR (Large, feature size 96).
-  157/159 tensors load from the pretrained checkpoint; only the new linear
-  classification head is randomly initialised.
-* **Input**: single-phase inhalation NCCT (`T00`), 1×512×512×96, internally
-  resampled to 256×256×96. Data are pre-cropped, HU-clipped to [-1000, 400]
-  and normalised to [0, 1].
-* **Loss / opt**: `BCEWithLogitsLoss`, AdamW, mixed-precision (AMP).
-* **Selection**: early stopping on validation AUC.
-* **Metrics**: AUC, sensitivity, specificity, PPV, NPV, F1 — reported as
-  mean ± 95% CI across the 10 outer folds, plus pooled bootstrap CIs.
+Models:
+* Pretrained SwinUNETR (VoComni pretrained weights needed) with whole CT image
+* Simple CNN+MIL with 5 image patch per-lobe 
+* Whole-lung Radiomics features with MLP
+* Ventilation/Perfusion/Mismatch (V/Q/M) features with MLP+MIL
+* 21 features (V/Q/M) + Volumes + HUs + hyperattentuation with MLP+MIL
+* Hybrid: simple CNN + 21 features
+* Masked CNN
+* Hybrid Masked CNN + 21 features
 
-### Nested CV + staged hyper-parameter search
-
-Hyper-parameters are tuned in **stages** (one group at a time, freezing the
-previous winner), as in the draft:
-
-1. learning rate ∈ {1e-3, 1e-4, 1e-5}
-2. weight decay ∈ {1e-3, 1e-4, 1e-5}
-3. dropout      ∈ {0.0, 0.1, 0.2}
-
-For each outer fold the selected config is refit on the full outer-training pool
-and evaluated on the held-out test fold. Total ≈ 460 model trainings
-(10 outer × (3+3+3 candidates × 5 inner) + 10 refits).
 
 ## Layout
 
