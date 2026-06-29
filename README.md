@@ -83,9 +83,3 @@ Scheduling notes:
 * Inner-search trainings use the reduced `hardware.inner_epochs` / `inner_patience`;
   refits use the full `training.epochs` / `patience`.
 
-## Data
-
-Pre-processed volumes (125 patients: 65 PE-positive, 60 PE-negative) live at
-`/mnt/hot/public/Yi-Kuan/PE/original_size_crop51251296` with `label.csv`
-(`filename,label`). Patient data and model weights are **never** committed
-(see `.gitignore`).
