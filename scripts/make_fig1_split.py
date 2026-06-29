@@ -17,7 +17,7 @@ META = [
     ("Hybrid + mask",        "Mask-guided hybrid CNN",                     "cnn"),
     ("Image CNN + mask",     "Mask-guided image CNN",                      "cnn"),
     ("Hybrid (no mask)",     "Hybrid CNN + features",                      "cnn"),
-    ("Features (21)",        "Per-lobe features (V/Q+hyperattenuation) ‡", "feat"),
+    ("Features (21)",        "Per-lobe features (V/Q+hyperattenuation)", "feat"),
     ("V/Q features",         "V/Q indices only",                           "feat"),
     ("Radiomics",            "Whole-lung radiomics",                       "feat"),
     ("SwinUNETR-I (DL)",     "SwinUNETR (deep, single-phase)",             "dl"),
